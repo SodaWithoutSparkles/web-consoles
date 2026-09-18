@@ -20,6 +20,7 @@ permissions:
   contents: write # create Git tags and GitHub Releases
   # Required by npm --provenance to attest the build came from this repo.
   id-token: write
+  issues: write # create GitHub Release issues
 
 concurrency:
   group: release
