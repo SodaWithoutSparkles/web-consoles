@@ -32,12 +32,12 @@ Commits on `main` following [Conventional Commits](https://www.conventionalcommi
 produce a release automatically — npm publish, Git tag, GitHub Release, and
 `CHANGELOG.md`:
 
-| Commit | Release |
-| --- | --- |
-| `fix: ...` | patch |
-| `feat: ...` | minor |
-| `fix!: ...` / `feat!: ...` or `BREAKING CHANGE:` in the body | major |
-| anything else | none |
+| Commit                                                       | Release |
+| ------------------------------------------------------------ | ------- |
+| `fix: ...`                                                   | patch   |
+| `feat: ...`                                                  | minor   |
+| `fix!: ...` / `feat!: ...` or `BREAKING CHANGE:` in the body | major   |
+| anything else                                                | none    |
 
 ## Quick start
 

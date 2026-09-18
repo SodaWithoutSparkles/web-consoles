@@ -23,7 +23,7 @@
         try {
           window.parent.postMessage(
             {
-              type: "sandbox-runtime-error",
+              type: "runtime-error",
               payload: {
                 message: String(event.message).slice(0, 500),
                 filename: event.filename || "",

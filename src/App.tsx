@@ -26,6 +26,38 @@ import {
 /** Max lines kept in state — bounds per-frame render work. */
 const MAX_LINES = 500;
 
+/** Max commands kept in send history. */
+const MAX_HISTORY = 100;
+
+/** localStorage key prefix for persisted UI settings. */
+const STORE_PREFIX = 'web-consoles:';
+
+/**
+ * `useState` that survives reloads: reads JSON from localStorage on first
+ * render, writes on every change. Storage errors (private mode, quota) are
+ * ignored — settings just stay session-only.
+ */
+function useStoredState<T>(key: string, initial: T) {
+  const [value, setValue] = useState<T>(() => {
+    try {
+      const raw = localStorage.getItem(STORE_PREFIX + key);
+      return raw === null ? initial : (JSON.parse(raw) as T);
+    } catch {
+      return initial;
+    }
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORE_PREFIX + key, JSON.stringify(value));
+    } catch {
+      // storage unavailable — settings stay session-only
+    }
+  }, [key, value]);
+
+  return [value, setValue] as const;
+}
+
 function generateId(): string {
   return crypto.randomUUID();
 }
@@ -117,15 +149,24 @@ export default function App() {
   const [inputValue, setInputValue] = useState('');
   const [autoScroll, setAutoScroll] = useState(true);
   const [showTimestamps, setShowTimestamps] = useState(true);
-  const [displayFormat, setDisplayFormat] = useState<DisplayFormat>('ascii');
-  const [lineEnding, setLineEnding] = useState<LineEnding>(LineEnding.CRLF);
-  const [sendFormat, setSendFormat] = useState<'text' | 'hex'>('text');
   const [showSettings, setShowSettings] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
+
+  // Persisted settings (localStorage).
+  const [displayFormat, setDisplayFormat] = useStoredState<DisplayFormat>('display-format', 'ascii');
+  const [lineEnding, setLineEnding] = useStoredState<LineEnding>('line-ending', LineEnding.CRLF);
+  const [sendFormat, setSendFormat] = useStoredState<'text' | 'hex'>('send-format', 'text');
 
   // Config state
-  const [serialConfig, setSerialConfig] = useState<SerialConnectionOptions>(DEFAULT_SERIAL_OPTIONS);
-  const [blePresetKey, setBlePresetKey] = useState<string>('nordic_uart');
-  const [bleConfig, setBleConfig] = useState<BLEConnectionOptions>(DEFAULT_BLE_OPTIONS);
+  const [serialConfig, setSerialConfig] = useStoredState<SerialConnectionOptions>('serial-config', DEFAULT_SERIAL_OPTIONS);
+  const [blePresetKey, setBlePresetKey] = useStoredState<string>('ble-preset', 'nordic_uart');
+  const [bleConfig, setBleConfig] = useStoredState<BLEConnectionOptions>('ble-config', DEFAULT_BLE_OPTIONS);
+
+  // Send history: chronological, oldest first, deduped on send.
+  const [history, setHistory] = useStoredState<string[]>('send-history', []);
+  // Arrow-key browsing cursor: -1 = editing the draft, 0 = newest entry.
+  const historyIndexRef = useRef(-1);
+  const draftRef = useRef('');
 
   const consoleRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -280,16 +321,19 @@ export default function App() {
   // ---- Send ----
 
   const handleSend = async () => {
-    if (!inputValue.trim() || !isConnected || !connRef.current) return;
+    const command = inputValue;
+    if (!command.trim() || !isConnected || !connRef.current) return;
+
+    historyIndexRef.current = -1;
 
     try {
       let bytes: Uint8Array;
 
       if (sendFormat === 'hex') {
-        bytes = hexToBytes(inputValue);
+        bytes = hexToBytes(command);
         addLine(bytes, 'sent');
       } else {
-        const text = inputValue + lineEnding;
+        const text = command + lineEnding;
         bytes = new TextEncoder().encode(text);
         addLine(bytes, 'sent');
       }
@@ -297,6 +341,8 @@ export default function App() {
       await connRef.current.send(bytes);
       // Only clear on success — a failed send keeps the typed command.
       setInputValue('');
+      // Dedupe + append so ArrowUp walks history in send order.
+      setHistory((prev) => [...prev.filter((cmd) => cmd !== command), command].slice(-MAX_HISTORY));
     } catch (err: unknown) {
       addSystemLine(`Send error: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -304,14 +350,40 @@ export default function App() {
     inputRef.current?.focus();
   };
 
+  // ArrowUp/ArrowDown walk the send history; the in-progress draft is restored on the way back.
+  const navigateHistory = (delta: 1 | -1) => {
+    if (history.length === 0) return;
+    const index = historyIndexRef.current;
+    if (delta === 1 && index === -1) draftRef.current = inputValue;
+    const next = Math.min(Math.max(index + delta, -1), history.length - 1);
+    historyIndexRef.current = next;
+    setInputValue(next === -1 ? draftRef.current : history[history.length - 1 - next]);
+  };
+
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    // Ignore Enter while an IME composition is active (e.g. CJK input).
-    if (e.key === 'Enter' && !e.nativeEvent.isComposing) handleSend();
+    // Ignore keys while an IME composition is active (e.g. CJK input) — Enter
+    // commits the composition and the arrows move the candidate list.
+    if (e.nativeEvent.isComposing) return;
+    if (e.key === 'Enter') handleSend();
+    else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+      e.preventDefault();
+      navigateHistory(e.key === 'ArrowUp' ? 1 : -1);
+    } else if (e.key === 'Escape') {
+      setShowHistory(false);
+    }
   };
 
   const clearConsole = () => {
     pendingLinesRef.current = [];
     setLines([]);
+  };
+
+  // Fill the command box from a history entry; the user still presses Enter to send.
+  const pickHistory = (command: string) => {
+    setInputValue(command);
+    historyIndexRef.current = -1;
+    setShowHistory(false);
+    inputRef.current?.focus();
   };
 
   // ---- BLE preset change ----
@@ -557,23 +629,18 @@ export default function App() {
           </select>
         </div>
 
-        {/* Display format */}
+        {/* Display format — dropdown to match End/Send */}
         <div className="flex items-center gap-1">
           <label className="text-xs text-gray-500">View:</label>
-          <div className="flex items-center bg-gray-800 rounded p-0.5 gap-0.5">
-            {(['ascii', 'hex', 'both'] as DisplayFormat[]).map((fmt) => (
-              <button
-                key={fmt}
-                onClick={() => setDisplayFormat(fmt)}
-                className={`px-2 py-0.5 rounded text-xs transition-all ${displayFormat === fmt
-                    ? 'bg-gray-600 text-white'
-                    : 'text-gray-500 hover:text-gray-300'
-                  }`}
-              >
-                {fmt === 'ascii' ? 'ASCII' : fmt === 'hex' ? 'HEX' : 'BOTH'}
-              </button>
-            ))}
-          </div>
+          <select
+            value={displayFormat}
+            onChange={(e) => setDisplayFormat(e.target.value as DisplayFormat)}
+            className="bg-gray-800 border border-gray-700 rounded px-1.5 py-1 text-xs text-gray-300 focus:outline-none focus:border-emerald-500"
+          >
+            <option value="ascii">ASCII</option>
+            <option value="hex">HEX</option>
+            <option value="both">Both</option>
+          </select>
         </div>
 
         <div className="flex-1"></div>
@@ -595,6 +662,53 @@ export default function App() {
         >
           ↓
         </button>
+        <div className="relative">
+          <button
+            onClick={() => setShowHistory((v) => !v)}
+            className={`px-2 py-1 rounded text-xs transition-colors ${showHistory ? 'bg-gray-700 text-gray-200' : 'text-gray-500 hover:text-gray-300'
+              }`}
+            title="Send history"
+          >
+            History
+          </button>
+          {showHistory && (
+            <div className="absolute right-0 top-full mt-1 w-80 max-h-72 overflow-y-auto bg-gray-900 border border-gray-700 rounded-lg shadow-xl z-50">
+              <div className="sticky top-0 flex items-center justify-between px-3 py-2 bg-gray-900 border-b border-gray-800">
+                <span className="text-xs text-gray-400">History ({history.length})</span>
+                <button
+                  onClick={() => setHistory([])}
+                  disabled={history.length === 0}
+                  className="text-xs text-gray-500 hover:text-red-400 disabled:opacity-30 disabled:cursor-not-allowed"
+                >
+                  Clear all
+                </button>
+              </div>
+              {history.length === 0 ? (
+                <p className="px-3 py-4 text-xs text-gray-600">No commands sent yet</p>
+              ) : (
+                // Newest first, like scrolling to the bottom of bash history.
+                [...history].reverse().map((command) => (
+                  <div key={command} className="flex items-center hover:bg-gray-800">
+                    <button
+                      onClick={() => pickHistory(command)}
+                      className="flex-1 min-w-0 px-3 py-1.5 text-xs text-left text-gray-200 truncate"
+                      title={command}
+                    >
+                      {command}
+                    </button>
+                    <button
+                      onClick={() => setHistory((prev) => prev.filter((cmd) => cmd !== command))}
+                      className="px-2 py-1.5 text-gray-600 hover:text-red-400"
+                      title="Remove entry"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
+          )}
+        </div>
         <button
           onClick={clearConsole}
           className="px-2 py-1 rounded text-xs text-gray-500 hover:text-gray-300 hover:bg-gray-800 transition-colors"
@@ -637,10 +751,16 @@ export default function App() {
           ref={inputRef}
           type="text"
           value={inputValue}
-          onChange={(e) => setInputValue(e.target.value)}
+          onChange={(e) => { setInputValue(e.target.value); historyIndexRef.current = -1; }}
           onKeyDown={handleKeyDown}
           disabled={!isConnected}
-          placeholder={isConnected ? 'Type command and press Enter…' : 'Connect to a device first…'}
+          placeholder={
+            !isConnected
+              ? 'Connect to a device first…'
+              : sendFormat === 'hex'
+                ? 'Type hex bytes and press Enter…'
+                : 'Type text and press Enter…'
+          }
           className="flex-1 bg-transparent text-gray-200 text-sm placeholder-gray-600 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed"
         />
         <button
