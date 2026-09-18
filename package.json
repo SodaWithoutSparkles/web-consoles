@@ -1,0 +1,60 @@
+{
+  "name": "web-consoles",
+  "version": "0.1.0",
+  "description": "Framework-agnostic Web Serial and BLE UART library with zero runtime dependencies.",
+  "type": "module",
+  "license": "MIT",
+  "sideEffects": false,
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist"
+  ],
+  "keywords": [
+    "web-serial",
+    "web-bluetooth",
+    "ble",
+    "uart",
+    "serial",
+    "browser"
+  ],
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "build:lib": "vite build --config vite.lib.config.js && tsc -p tsconfig.lib.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "check:lib-agnostic": "node scripts/check-lib-agnostic.mjs",
+    "semantic-release": "semantic-release"
+  },
+  "devDependencies": {
+    "@semantic-release/changelog": "^6.0.3",
+    "@semantic-release/git": "^10.0.1",
+    "@tailwindcss/vite": "^4.1.7",
+    "@types/react": "^18.2.0",
+    "@types/react-dom": "^18.2.0",
+    "@types/w3c-web-serial": "^1.0.8",
+    "@types/web-bluetooth": "^0.0.21",
+    "@vitejs/plugin-react": "^4.3.4",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "semantic-release": "^25.0.9",
+    "tailwindcss": "^4.1.7",
+    "typescript": "^5.7.0",
+    "vite": "^6.3.5",
+    "vitest": "^5.0.1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SodaWithoutSparkles/web-consoles.git"
+  }
+}

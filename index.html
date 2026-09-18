@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Web Serial Console</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&display=swap"
+    rel="stylesheet">
+  <script>
+    (function () {
+      if (window.self === window.top) return;
+      var reported = {};
+      window.addEventListener("error", function (event) {
+        // Resource-load errors have no message; only report JS runtime errors.
+        if (!event || !event.message) return;
+        var key =
+          event.message + "|" + (event.filename || "") + "|" + (event.lineno || 0);
+        if (reported[key]) return; // Report each distinct error only once.
+        reported[key] = true;
+        try {
+          window.parent.postMessage(
+            {
+              type: "sandbox-runtime-error",
+              payload: {
+                message: String(event.message).slice(0, 500),
+                filename: event.filename || "",
+                lineno: event.lineno || 0,
+                colno: event.colno || 0,
+                stack:
+                  event.error && event.error.stack
+                    ? String(event.error.stack).slice(0, 2000)
+                    : ""
+              }
+            },
+            "*"
+          );
+        } catch (e) {
+          /* Reporting failures must not break the page. */
+        }
+      });
+    })();
+  </script>
+</head>
+
+<body>
+  <div id="root"></div>
+  <script type="module" src="/src/main.tsx"></script>
+</body>
+
+</html>

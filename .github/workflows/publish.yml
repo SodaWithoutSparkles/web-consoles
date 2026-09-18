@@ -1,0 +1,59 @@
+name: Release
+
+# semantic-release drives versions from Conventional Commits. Every push to
+# main is analyzed; a release (npm publish + Git tag + GitHub Release +
+# CHANGELOG.md) happens only when commits since the last tag warrant one:
+#   feat:        -> minor
+#   fix:         -> patch
+#   feat!:/fix!: -> major
+#   no match     -> no release
+#
+# Requires the NPM_TOKEN repository secret (npmjs.com → Access Tokens →
+# Generate with Publish permission). package.json version is kept in sync
+# by @semantic-release/git after publishing.
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write # create Git tags and GitHub Releases
+  # Required by npm --provenance to attest the build came from this repo.
+  id-token: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    # Skip forks: they lack the NPM_TOKEN secret and would fail confusingly.
+    if: github.repository == 'SodaWithoutSparkles/web-consoles'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history — the commit analyzer scans from the last release tag.
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+          registry-url: https://registry.npmjs.org
+
+      # Gate the release on the same checks CI runs. Nothing is published
+      # unless tests and the lib build pass; build:lib produces dist/,
+      # which is what the npm tarball contains.
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run test
+      - run: npm run check:lib-agnostic
+      - run: npm run build:lib
+
+      - run: npx semantic-release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          # Equivalent of npm publish --provenance.
+          NPM_CONFIG_PROVENANCE: true
