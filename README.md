@@ -1,5 +1,7 @@
 # web-consoles
 
+[Demo](https://sodawithoutsparkles.github.io/web-consoles/)
+
 A framework-agnostic TypeScript library for talking to serial and BLE UART devices from the browser.
 It puts the Web Serial API and the Web Bluetooth API behind one small, event-driven interface.
 
@@ -9,13 +11,8 @@ It puts the Web Serial API and the Web Bluetooth API behind one small, event-dri
 
 ## Requirements
 
-The browser APIs are Chromium-only. Check support at runtime with
-`SerialConnection.isSupported()` and `BLEConnection.isSupported()`.
-
-| API           | Chrome / Edge    | Firefox | Safari |
-| ------------- | ---------------- | ------- | ------ |
-| Web Serial    | desktop          | no      | no     |
-| Web Bluetooth | desktop, Android | no      | no     |
+Support for [web-serial](https://caniuse.com/web-serial) or [web-bluetooth](https://caniuse.com/web-bluetooth) api.
+As of writing, Only Chromium-based support both, firefox only supports web-serial.
 
 ## Install
 
@@ -23,7 +20,9 @@ The browser APIs are Chromium-only. Check support at runtime with
 npm install web-consoles
 ```
 
-ESM only — there is no CommonJS build, so `require('web-consoles')` will not work.
+ESM only — there is no CommonJS build, so `require('web-consoles')` will not work. 
+
+Note: Releases are currently bugged, please copy the lib files if urgent
 
 ## Releases
 
