@@ -78,6 +78,20 @@ interface ConsoleLine {
   direction: 'sent' | 'received' | 'system';
   /** Decoded text, when known (received lines come from the streaming decoder). */
   text?: string;
+  /** Received line still open: the next chunk appends to it instead of starting a new row. */
+  open?: boolean;
+}
+
+/** Shared empty buffer for freshly created received lines. */
+const EMPTY_BYTES = new Uint8Array(0);
+
+function concatBytes(a: Uint8Array, b: Uint8Array): Uint8Array {
+  if (b.length === 0) return a;
+  if (a.length === 0) return b;
+  const out = new Uint8Array(a.length + b.length);
+  out.set(a, 0);
+  out.set(b, a.length);
+  return out;
 }
 
 type ConnectionType = 'serial' | 'ble' | null;
@@ -173,11 +187,21 @@ export default function App() {
   const connRef = useRef<DeviceConnection | null>(null);
   const unsubscribesRef = useRef<Array<() => void>>([]);
 
-  // Batched console writes: chunks accumulate here and flush to state once per frame.
-  const pendingLinesRef = useRef<ConsoleLine[]>([]);
+  // Console lines live in a ref so transport events mutate them synchronously:
+  // ordering can never interleave (a send closes the open received line before
+  // it is appended), and a rAF mirrors a copy into state once per frame. The
+  // last element may be an *open* received line still collecting chunks.
+  const linesRef = useRef<ConsoleLine[]>([]);
   const flushRafRef = useRef<number | null>(null);
+  // Previous chunk ended on a bare CR: swallow a leading LF in the next chunk
+  // so a CRLF pair split across reads stays one line break.
+  const pendingCRRef = useRef(false);
   // Streaming decoder keeps a partial UTF-8 sequence across chunk boundaries.
   const decoderRef = useRef<((bytes: Uint8Array) => string) | null>(null);
+  // Hex sends embed their terminator in the payload ("End: None"), so the
+  // incoming stream must not be cut on 0x0d/0x0a — those are data bytes.
+  const rawStreamRef = useRef(false);
+  rawStreamRef.current = sendFormat === 'hex';
 
   const isConnected = connState === ConnectionState.Connected;
 
@@ -188,24 +212,109 @@ export default function App() {
     return decoder(bytes);
   }, []);
 
-  const queueLine = useCallback((line: Omit<ConsoleLine, 'id' | 'timestamp'>) => {
-    pendingLinesRef.current.push({ ...line, id: generateId(), timestamp: new Date() });
+  /** Mirror the ref into state once per frame (bounds per-frame render work). */
+  const scheduleFlush = useCallback(() => {
     if (flushRafRef.current !== null) return;
     flushRafRef.current = requestAnimationFrame(() => {
       flushRafRef.current = null;
-      const batch = pendingLinesRef.current;
-      pendingLinesRef.current = [];
-      if (batch.length === 0) return;
-      setLines((prev) => {
-        const next = prev.concat(batch);
-        return next.length > MAX_LINES ? next.slice(-MAX_LINES) : next;
-      });
+      const all = linesRef.current;
+      if (all.length > MAX_LINES) linesRef.current = all.slice(-MAX_LINES);
+      setLines(linesRef.current.slice());
     });
   }, []);
 
+  /** End the open received line; the next chunk starts a new row. */
+  const closeOpenLine = useCallback(() => {
+    const lines = linesRef.current;
+    const last = lines[lines.length - 1];
+    if (last && last.direction === 'received' && last.open) {
+      lines[lines.length - 1] = { ...last, open: false };
+    }
+  }, []);
+
+  /**
+   * Append a sent/system line. Both close any open received line first: a user
+   * send interrupts the partial line, and subsequent incoming data starts a
+   * new line after it.
+   */
+  const pushLine = useCallback((line: Omit<ConsoleLine, 'id' | 'timestamp'>) => {
+    closeOpenLine();
+    linesRef.current.push({ ...line, id: generateId(), timestamp: new Date() });
+    scheduleFlush();
+  }, [closeOpenLine, scheduleFlush]);
+
   const addLine = useCallback((data: Uint8Array, direction: ConnectionDirection, text?: string) => {
-    queueLine({ data, direction, text });
-  }, [queueLine]);
+    pushLine({ data, direction, text });
+  }, [pushLine]);
+
+  /**
+   * Append to the open received line, creating it (timestamped) on its first
+   * byte. Nothing is held back: partial lines are visible immediately and keep
+   * their identity until `terminated` marks a line ending.
+   */
+  const appendReceivedLine = useCallback((data: Uint8Array, text: string, terminated: boolean) => {
+    const lines = linesRef.current;
+    let line = lines[lines.length - 1];
+    if (!line || line.direction !== 'received' || !line.open) {
+      line = { id: generateId(), timestamp: new Date(), data: EMPTY_BYTES, text: '', direction: 'received', open: true };
+      lines.push(line);
+    }
+    lines[lines.length - 1] = {
+      ...line,
+      data: concatBytes(line.data, data),
+      // Text drops the terminator (the row itself marks the break); `data`
+      // keeps its bytes so hex view stays faithful.
+      text: (line.text ?? '') + text,
+      open: !terminated,
+    };
+    scheduleFlush();
+  }, [scheduleFlush]);
+
+  /**
+   * Feed one received chunk through the line splitter. Line breaks are CRLF /
+   * LF / CR — the same endings the send side offers. Complete lines become
+   * closed rows; a trailing partial stays open and visible until more data or
+   * a user send arrives.
+   */
+  const handleReceivedBytes = useCallback((bytes: Uint8Array) => {
+    if (bytes.length === 0) return;
+    let start = 0;
+
+    // CRLF split across two reads: the CR already ended its line, so the LF
+    // that completes the pair must not open a blank row.
+    if (pendingCRRef.current) {
+      pendingCRRef.current = false;
+      if (bytes[0] === 0x0a) {
+        start = 1;
+        const lines = linesRef.current;
+        const last = lines[lines.length - 1];
+        if (last && last.direction === 'received') {
+          // Keep the byte for hex view; text is already terminated.
+          lines[lines.length - 1] = { ...last, data: concatBytes(last.data, bytes.subarray(0, 1)) };
+          scheduleFlush();
+        }
+      }
+    }
+
+    for (let i = start; i < bytes.length;) {
+      const b = bytes[i];
+      if (b !== 0x0d && b !== 0x0a) { i++; continue; }
+
+      const crlf = b === 0x0d && bytes[i + 1] === 0x0a;
+      const end = crlf ? i + 2 : i + 1;
+      appendReceivedLine(bytes.subarray(start, end), decodeChunk(bytes.subarray(start, i)), true);
+      if (b === 0x0d && !crlf && end === bytes.length) {
+        // Chunk ends on a bare CR: it may be the first half of a CRLF whose LF
+        // is still in flight — reads are timing-based, not message-aligned.
+        pendingCRRef.current = true;
+      }
+      start = i = end;
+    }
+
+    if (start < bytes.length) {
+      appendReceivedLine(bytes.subarray(start), decodeChunk(bytes.subarray(start)), false);
+    }
+  }, [appendReceivedLine, decodeChunk, scheduleFlush]);
 
   const addSystemLine = useCallback((text: string) => {
     addLine(new TextEncoder().encode(text), 'system', text);
@@ -230,9 +339,11 @@ export default function App() {
     }
 
     connRef.current = conn;
-    // New session: a partial UTF-8 sequence left by the previous connection
-    // must not prefix the first chunk of this one.
+    // New session: a partial UTF-8 sequence, an open received line, or a
+    // pending CR left by the previous connection must not leak into this one.
     decoderRef.current = null;
+    closeOpenLine();
+    pendingCRRef.current = false;
 
     const unsubs = [
       conn.onStateChange((state) => {
@@ -243,7 +354,13 @@ export default function App() {
       }),
       conn.onData((data) => {
         const bytes = new Uint8Array(data);
-        addLine(bytes, 'received', decodeChunk(bytes));
+        if (rawStreamRef.current) {
+          // Hex mode: binary stream, no line endings — rows break only on a
+          // user send (addLine closes the open line).
+          appendReceivedLine(bytes, decodeChunk(bytes), false);
+        } else {
+          handleReceivedBytes(bytes);
+        }
       }),
       conn.onError((err) => {
         setErrorMsg(err.message);
@@ -254,7 +371,7 @@ export default function App() {
       }),
     ];
     unsubscribesRef.current = unsubs;
-  }, [addLine, addSystemLine, cleanupConnection, decodeChunk]);
+  }, [addSystemLine, appendReceivedLine, handleReceivedBytes, cleanupConnection, decodeChunk, closeOpenLine]);
 
   // Auto-scroll
   useEffect(() => {
@@ -331,11 +448,13 @@ export default function App() {
 
       if (sendFormat === 'hex') {
         bytes = hexToBytes(command);
-        addLine(bytes, 'sent');
+        // Hex payloads carry their own terminator — show the bytes as typed.
+        addLine(bytes, 'sent', bytesToHex(bytes));
       } else {
-        const text = command + lineEnding;
-        bytes = new TextEncoder().encode(text);
-        addLine(bytes, 'sent');
+        bytes = new TextEncoder().encode(command + lineEnding);
+        // Row text excludes the appended ending (the row break marks it);
+        // data keeps the bytes for hex view.
+        addLine(bytes, 'sent', command);
       }
 
       await connRef.current.send(bytes);
@@ -374,7 +493,8 @@ export default function App() {
   };
 
   const clearConsole = () => {
-    pendingLinesRef.current = [];
+    linesRef.current = [];
+    pendingCRRef.current = false;
     setLines([]);
   };
 
