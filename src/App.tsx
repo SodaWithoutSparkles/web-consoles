@@ -17,6 +17,7 @@ import { ConsoleOutput } from './components/ConsoleOutput';
 import { displaySection } from './components/DisplaySettings';
 import { ErrorBar } from './components/ErrorBar';
 import { Header } from './components/Header';
+import { sendSection } from './components/SendSettings';
 import { SettingsModal } from './components/SettingsModal';
 import { SupportWarning } from './components/SupportWarning';
 import { Toolbar } from './components/Toolbar';
@@ -50,6 +51,7 @@ export default function App() {
   const [receiveBreakCustom, setReceiveBreakCustom] = useStoredState('receive-break-custom', '');
   const [nonPrintable, setNonPrintable] = useStoredState<NonPrintable>('non-printable', 'hex-except-crlf');
   const [lineEnding, setLineEnding] = useStoredState<LineEnding>('line-ending', LineEnding.CRLF);
+  const [allowEmptyLines, setAllowEmptyLines] = useStoredState('allow-empty-lines', false);
   const [sendFormat, setSendFormat] = useStoredState<SendFormat>('send-format', 'text');
   const [serialConfig, setSerialConfig] = useStoredState<SerialConnectionOptions>('serial-config', DEFAULT_SERIAL_OPTIONS);
   const [blePresetKey, setBlePresetKey] = useStoredState<string>('ble-preset', 'nordic_uart');
@@ -113,7 +115,9 @@ export default function App() {
 
   const handleSend = async () => {
     const command = inputValue;
-    if (!command.trim() || !isConnected) return;
+    // Blank commands only go out when "allow empty lines" is on; the send is
+    // then the line ending alone (e.g. a single 0D 0A with CR+LF).
+    if (!isConnected || (!allowEmptyLines && !command.trim())) return;
 
     resetCursor();
 
@@ -134,8 +138,9 @@ export default function App() {
       await send(bytes);
       // Only clear on success — a failed send keeps the typed command.
       setInputValue('');
-      // Dedupe + append so ArrowUp walks history in send order.
-      record(command);
+      // Dedupe + append so ArrowUp walks history in send order; blank sends
+      // stay out of history (an empty entry is nothing to recall).
+      if (command) record(command);
     } catch (err: unknown) {
       addSystemLine(`Send error: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -187,6 +192,12 @@ export default function App() {
             setBleConfig,
             blePresetKey,
             setBlePresetKey,
+          }),
+          sendSection({
+            lineEnding,
+            setLineEnding,
+            allowEmptyLines,
+            setAllowEmptyLines,
           }),
           displaySection({
             showTimestamps,
@@ -247,6 +258,7 @@ export default function App() {
         onSend={handleSend}
         onKeyDown={handleKeyDown}
         disabled={!isConnected}
+        allowEmptyLines={allowEmptyLines}
         sendFormat={sendFormat}
         inputRef={inputRef}
       />

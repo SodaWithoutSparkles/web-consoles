@@ -7,6 +7,8 @@ interface CommandInputProps {
   onSend: () => void;
   onKeyDown: (e: KeyboardEvent<HTMLInputElement>) => void;
   disabled: boolean;
+  /** Permit sending a blank command (the line ending alone). */
+  allowEmptyLines: boolean;
   sendFormat: SendFormat;
   inputRef: RefObject<HTMLInputElement>;
 }
@@ -18,6 +20,7 @@ export function CommandInput({
   onSend,
   onKeyDown,
   disabled,
+  allowEmptyLines,
   sendFormat,
   inputRef,
 }: CommandInputProps) {
@@ -42,7 +45,7 @@ export function CommandInput({
       />
       <button
         onClick={onSend}
-        disabled={disabled || !value.trim()}
+        disabled={disabled || (!allowEmptyLines && !value.trim())}
         className="px-3 py-1.5 bg-emerald-600 text-white text-xs font-medium rounded hover:bg-emerald-500 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
       >
         Send
