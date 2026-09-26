@@ -12,6 +12,8 @@ export interface ConsoleLine {
   text?: string;
   /** Received line still open: the next chunk appends to it instead of starting a new row. */
   open?: boolean;
+  /** Send failed: bytes may be partially written (BLE chunked writes). */
+  failed?: boolean;
 }
 
 export type ConnectionDirection = ConsoleLine['direction'];

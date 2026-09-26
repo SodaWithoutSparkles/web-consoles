@@ -25,7 +25,7 @@ export function ConsoleOutput({ lines, showTimestamps, displayFormat, nonPrintab
   return (
     <div
       ref={consoleRef}
-      className="flex-1 overflow-y-auto p-4 bg-gray-950 scroll-smooth min-h-0"
+      className="flex-1 overflow-y-auto p-4 bg-gray-950 min-h-0"
     >
       {lines.length === 0 ? (
         <div className="flex flex-col items-center justify-center h-full text-gray-600">

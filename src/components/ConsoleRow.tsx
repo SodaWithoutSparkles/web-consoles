@@ -68,10 +68,12 @@ export const ConsoleRow = memo(function ConsoleRow({
   // System rows are messages, not data: always plain text, never dumped.
   if (line.direction !== 'system' && displayFormat === 'both-hexdump') {
     const rows = hexdumpRows(line.data, HEXDUMP_WIDTH);
+    // An empty payload dumps to no rows; keep one so the row stays visible.
+    const dumpRows = rows.length > 0 ? rows : [{ hex: '', ascii: '' }];
     return (
       <div className={`flex gap-2 text-sm leading-relaxed ${colorClass}`}>
         <span className="flex min-w-0 flex-col">
-          {rows.map((row, index) => (
+          {dumpRows.map((row, index) => (
             <span key={index} className="flex gap-2">
               {showTimestamps && (
                 <span className="text-gray-600 text-xs shrink-0 pt-0.5 select-none">
@@ -84,7 +86,12 @@ export const ConsoleRow = memo(function ConsoleRow({
               )}
               <span className="shrink-0 select-none w-3 text-center">{index === 0 && arrow}</span>
               <span className="whitespace-pre">{row.hex}</span>
-              <span className="text-gray-500">{`|${row.ascii}|`}</span>
+              {row.ascii && <span className="text-gray-500">{`|${row.ascii}|`}</span>}
+              {index === 0 && line.failed && (
+                <span className="text-red-500 shrink-0" title="Send failed — bytes may be partially written">
+                  ✗ failed
+                </span>
+              )}
             </span>
           ))}
         </span>
@@ -110,6 +117,11 @@ export const ConsoleRow = memo(function ConsoleRow({
       )}
       <span className="shrink-0 select-none w-3 text-center">{arrow}</span>
       <span className="break-all whitespace-pre-wrap">{content}</span>
+      {line.failed && (
+        <span className="text-red-500 shrink-0" title="Send failed — bytes may be partially written">
+          ✗ failed
+        </span>
+      )}
     </div>
   );
 });

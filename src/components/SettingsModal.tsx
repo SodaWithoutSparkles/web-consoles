@@ -28,6 +28,9 @@ interface SettingsModalProps {
  */
 export function SettingsModal({ open, onClose, sections }: SettingsModalProps) {
   const dialogRef = useRef<HTMLDialogElement>(null);
+  // Where the pointer went down: a text-selection drag can start inside the
+  // dialog and end on the backdrop, which must not count as a backdrop click.
+  const pressedBackdropRef = useRef(false);
   const [activeSectionId, setActiveSectionId] = useState(sections[0]?.id);
   const [activeTabId, setActiveTabId] = useState<string>();
 
@@ -49,8 +52,14 @@ export function SettingsModal({ open, onClose, sections }: SettingsModalProps) {
       // Native Escape handling is unreliable here (and unfocused-input cases
       // vary by browser), so close explicitly on any Escape inside the dialog.
       onKeyDown={(e) => e.key === 'Escape' && onClose()}
-      // Clicks land on the dialog itself only when they hit the backdrop.
-      onClick={(e) => e.target === e.currentTarget && onClose()}
+      // Clicks land on the dialog itself only when they hit the backdrop, but
+      // the press must have started there too.
+      onPointerDown={(e) => {
+        pressedBackdropRef.current = e.target === e.currentTarget;
+      }}
+      onClick={(e) => {
+        if (pressedBackdropRef.current && e.target === e.currentTarget) onClose();
+      }}
       aria-label="Settings"
       className="w-[75vw] h-[80vh] overflow-hidden rounded-lg bg-gray-900 text-gray-100 shadow-2xl"
     >
@@ -90,12 +99,33 @@ export function SettingsModal({ open, onClose, sections }: SettingsModalProps) {
           </div>
 
           {section?.tabs && (
-            <div role="tablist" className="flex shrink-0 gap-1 overflow-x-auto border-b border-gray-800 px-4">
+            <div
+              role="tablist"
+              className="flex shrink-0 gap-1 overflow-x-auto border-b border-gray-800 px-4"
+              onKeyDown={(e) => {
+                const tabs = section?.tabs;
+                if (!section || !tabs) return;
+                const index = tabs.findIndex((t) => t.id === tab?.id);
+                const next =
+                  e.key === 'ArrowRight' ? tabs[(index + 1) % tabs.length]
+                  : e.key === 'ArrowLeft' ? tabs[(index - 1 + tabs.length) % tabs.length]
+                  : e.key === 'Home' ? tabs[0]
+                  : e.key === 'End' ? tabs[tabs.length - 1]
+                  : undefined;
+                if (!next) return;
+                e.preventDefault();
+                setActiveTabId(next.id);
+                document.getElementById(`tab-${section.id}-${next.id}`)?.focus();
+              }}
+            >
               {section.tabs.map((t) => (
                 <button
                   key={t.id}
                   role="tab"
+                  id={`tab-${section.id}-${t.id}`}
                   aria-selected={t.id === tab?.id}
+                  aria-controls={`tabpanel-${section.id}-${t.id}`}
+                  tabIndex={t.id === tab?.id ? 0 : -1}
                   onClick={() => setActiveTabId(t.id)}
                   className={`shrink-0 border-b-2 px-3 py-2 text-xs font-medium transition-colors ${
                     t.id === tab?.id
@@ -109,7 +139,19 @@ export function SettingsModal({ open, onClose, sections }: SettingsModalProps) {
             </div>
           )}
 
-          <div className="flex-1 overflow-y-auto p-4">{tab?.content ?? section?.content}</div>
+          {section?.tabs && tab ? (
+            <div
+              role="tabpanel"
+              id={`tabpanel-${section.id}-${tab.id}`}
+              aria-labelledby={`tab-${section.id}-${tab.id}`}
+              className="flex-1 overflow-y-auto p-4"
+            >
+              {tab.content}
+            </div>
+          ) : (
+            // Section without tabs: a plain scroll area, not a tabpanel.
+            <div className="flex-1 overflow-y-auto p-4">{section?.content}</div>
+          )}
         </div>
       </div>
     </dialog>

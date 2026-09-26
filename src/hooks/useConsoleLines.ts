@@ -33,20 +33,28 @@ export function useConsoleLines(isRawStream: boolean, split: SplitterSettings) {
   const decoderRef = useRef<((bytes: Uint8Array) => string) | null>(null);
   // Lets the connection's onData closure read the mode of the latest render.
   const rawStreamRef = useRef(isRawStream);
-  rawStreamRef.current = isRawStream;
   // Splitter + the settings it was built from. Rebuilt lazily when the mode
   // changes, which also drops any partial match held for the old mode.
   const splitterRef = useRef<{ key: string; splitter: LineSplitter } | null>(null);
-  const splitKey = `${split.mode}:${split.custom ? Array.from(split.custom).join() : ''}`;
+  const splitRef = useRef(split);
+
+  // Connection's onData closure is captured once per session — refs let it
+  // read the latest settings without re-subscribing.
+  useEffect(() => {
+    rawStreamRef.current = isRawStream;
+    splitRef.current = split;
+  });
 
   /** Current splitter, built on first use and rebuilt when settings change. */
   const getSplitter = useCallback((): LineSplitter => {
+    const { mode, custom } = splitRef.current;
+    const key = `${mode}:${custom ? Array.from(custom).join() : ''}`;
     const current = splitterRef.current;
-    if (current && current.key === splitKey) return current.splitter;
-    const splitter = createLineSplitter(split.mode, split.custom);
-    splitterRef.current = { key: splitKey, splitter };
+    if (current && current.key === key) return current.splitter;
+    const splitter = createLineSplitter(mode, custom);
+    splitterRef.current = { key, splitter };
     return splitter;
-  }, [splitKey, split.mode, split.custom]);
+  }, []);
 
   const decodeChunk = useCallback((bytes: Uint8Array): string => {
     const decoder = decoderRef.current ?? (decoderRef.current = createStreamDecoder());
@@ -70,8 +78,10 @@ export function useConsoleLines(isRawStream: boolean, split: SplitterSettings) {
     const last = lines[lines.length - 1];
     if (last && last.direction === 'received' && last.open) {
       lines[lines.length - 1] = { ...last, open: false };
+      // Keep the mirrored state in step with the ref.
+      scheduleFlush();
     }
-  }, []);
+  }, [scheduleFlush]);
 
   /**
    * Append a sent/system line. Both close any open received line first: a user
@@ -80,13 +90,24 @@ export function useConsoleLines(isRawStream: boolean, split: SplitterSettings) {
    */
   const pushLine = useCallback((line: Omit<ConsoleLine, 'id' | 'timestamp'>) => {
     closeOpenLine();
-    linesRef.current.push({ ...line, id: generateId(), timestamp: new Date() });
+    const id = generateId();
+    linesRef.current.push({ ...line, id, timestamp: new Date() });
     scheduleFlush();
+    return id;
   }, [closeOpenLine, scheduleFlush]);
 
   const addLine = useCallback((data: Uint8Array, direction: ConnectionDirection, text?: string) => {
-    pushLine({ data, direction, text });
+    return pushLine({ data, direction, text });
   }, [pushLine]);
+
+  /** Mark a sent row failed — no-op once trimmed by MAX_LINES or cleared. */
+  const failLine = useCallback((id: string) => {
+    const lines = linesRef.current;
+    const index = lines.findIndex((line) => line.id === id);
+    if (index < 0) return;
+    lines[index] = { ...lines[index], failed: true };
+    scheduleFlush();
+  }, [scheduleFlush]);
 
   /**
    * Append to the open received line, creating it (timestamped) on its first
@@ -115,12 +136,16 @@ export function useConsoleLines(isRawStream: boolean, split: SplitterSettings) {
    * into that row: `data` keeps them (hex view stays faithful), text already ended. */
   const absorbIntoPrevious = useCallback((bytes: Uint8Array, terminated: boolean) => {
     const lines = linesRef.current;
-    const last = lines[lines.length - 1];
-    if (!last || last.direction !== 'received') return;
-    lines[lines.length - 1] = {
-      ...last,
-      data: concatBytes(last.data, bytes),
-      open: terminated ? false : last.open,
+    // The row the delimiter completes may no longer be last (a user send
+    // interrupts it) — find the most recent received row.
+    let index = lines.length - 1;
+    while (index >= 0 && lines[index].direction !== 'received') index--;
+    if (index < 0) return; // no received row left (e.g. after Clear) — nothing to attach to
+    const line = lines[index];
+    lines[index] = {
+      ...line,
+      data: concatBytes(line.data, bytes),
+      open: terminated ? false : line.open,
     };
     scheduleFlush();
   }, [scheduleFlush]);
@@ -156,7 +181,10 @@ export function useConsoleLines(isRawStream: boolean, split: SplitterSettings) {
 
   const clearConsole = useCallback(() => {
     linesRef.current = [];
+    // A partial delimiter or UTF-8 sequence from the cleared output must not
+    // complete into the first row after Clear.
     splitterRef.current = null;
+    decoderRef.current = null;
     setLines([]);
   }, []);
 
@@ -171,5 +199,5 @@ export function useConsoleLines(isRawStream: boolean, split: SplitterSettings) {
     };
   }, []);
 
-  return { lines, addLine, addSystemLine, handleData, resetSession, clearConsole };
+  return { lines, addLine, addSystemLine, failLine, handleData, resetSession, clearConsole };
 }

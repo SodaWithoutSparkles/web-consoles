@@ -46,8 +46,8 @@
   animation: pulse-dot 1.5s ease-in-out infinite;
 }
 
-/* Input focus glow */
-input:focus {
+/* Input focus glow (checkboxes read the glow as a stray ring, skip them) */
+input:not([type='checkbox']):focus {
   box-shadow: 0 0 0 1px rgba(16, 185, 129, 0.3);
 }
 

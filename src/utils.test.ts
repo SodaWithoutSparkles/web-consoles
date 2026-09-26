@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { createLineSplitter, hexdumpRows, parseBreakBytes, splitControlChars, type BreakSegment } from './utils';
+import {
+  createLineSplitter,
+  formatTime,
+  hexdumpRows,
+  parseBreakBytes,
+  splitControlChars,
+  type BreakSegment,
+} from './utils';
 import type { ReceiveBreak } from './types';
 
 const enc = (text: string) => new TextEncoder().encode(text);
@@ -36,6 +43,18 @@ function toRows(segments: BreakSegment[]): Row[] {
   }
   return out;
 }
+
+describe('formatTime', () => {
+  // Local components, so the expectation holds in any timezone. Hour 0 is
+  // avoided: `hour12: false` renders midnight as 24 on some ICU versions.
+  it('formats HH:MM:SS with padded milliseconds', () => {
+    expect(formatTime(new Date(2026, 0, 2, 3, 4, 5, 67))).toBe('03:04:05.067');
+  });
+
+  it('pads milliseconds to three digits', () => {
+    expect(formatTime(new Date(2026, 0, 2, 3, 4, 5, 7))).toBe('03:04:05.007');
+  });
+});
 
 describe('createLineSplitter', () => {
   describe('follow (default: CR, LF and CRLF all break)', () => {

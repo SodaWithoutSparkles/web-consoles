@@ -1,7 +1,8 @@
-import { useRef, useState, type KeyboardEvent } from 'react';
+import { useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import {
   SerialConnection,
   BLEConnection,
+  BLE_PRESETS,
   LineEnding,
   DEFAULT_SERIAL_OPTIONS,
   DEFAULT_BLE_OPTIONS,
@@ -24,7 +25,7 @@ import { Toolbar } from './components/Toolbar';
 import { useConsoleLines } from './hooks/useConsoleLines';
 import { useDeviceConnection } from './hooks/useDeviceConnection';
 import { useSendHistory } from './hooks/useSendHistory';
-import { useStoredState } from './hooks/useStoredState';
+import { isOneOf, useStoredState } from './hooks/useStoredState';
 import { parseBreakBytes } from './utils';
 import type { ConnectionType, NonPrintable, ReceiveBreak, SendFormat } from './types';
 
@@ -44,23 +45,46 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
 
-  // Persisted settings (localStorage)
-  const [displayFormat, setDisplayFormat] = useStoredState<DisplayFormat>('display-format', 'ascii');
+  // Persisted settings (localStorage) — a validator rejects corrupt stored
+  // values (older releases, hand-edited storage) so they fall back to defaults.
+  const [displayFormat, setDisplayFormat] = useStoredState<DisplayFormat>(
+    'display-format',
+    'ascii',
+    isOneOf('ascii', 'hex', 'both', 'both-hexdump'),
+  );
   const [showTimestamps, setShowTimestamps] = useStoredState('show-timestamps', true);
-  const [receiveBreak, setReceiveBreak] = useStoredState<ReceiveBreak>('receive-break', 'follow');
+  const [receiveBreak, setReceiveBreak] = useStoredState<ReceiveBreak>(
+    'receive-break',
+    'follow',
+    isOneOf('follow', 'crlf', 'cr', 'lf', 'custom'),
+  );
   const [receiveBreakCustom, setReceiveBreakCustom] = useStoredState('receive-break-custom', '');
-  const [nonPrintable, setNonPrintable] = useStoredState<NonPrintable>('non-printable', 'hex-except-crlf');
-  const [lineEnding, setLineEnding] = useStoredState<LineEnding>('line-ending', LineEnding.CRLF);
+  const [nonPrintable, setNonPrintable] = useStoredState<NonPrintable>(
+    'non-printable',
+    'hex-except-crlf',
+    isOneOf('hidden', 'hex-except-crlf', 'hex-except-crlf-tab', 'hex-except-crlf-tab-bksp', 'hex-all', 'print'),
+  );
+  const [lineEnding, setLineEnding] = useStoredState<LineEnding>(
+    'line-ending',
+    LineEnding.CRLF,
+    isOneOf(LineEnding.None, LineEnding.LF, LineEnding.CR, LineEnding.CRLF),
+  );
   const [allowEmptyLines, setAllowEmptyLines] = useStoredState('allow-empty-lines', false);
-  const [sendFormat, setSendFormat] = useStoredState<SendFormat>('send-format', 'text');
+  const [sendFormat, setSendFormat] = useStoredState<SendFormat>('send-format', 'text', isOneOf('text', 'hex'));
   const [serialConfig, setSerialConfig] = useStoredState<SerialConnectionOptions>('serial-config', DEFAULT_SERIAL_OPTIONS);
-  const [blePresetKey, setBlePresetKey] = useStoredState<string>('ble-preset', 'nordic_uart');
+  const [blePresetKey, setBlePresetKey] = useStoredState<string>(
+    'ble-preset',
+    'nordic_uart',
+    isOneOf(...Object.keys(BLE_PRESETS), 'custom'),
+  );
   const [bleConfig, setBleConfig] = useStoredState<BLEConnectionOptions>('ble-config', DEFAULT_BLE_OPTIONS);
 
   // Unusable custom hex falls back to Follow send (see createLineSplitter).
-  const customBreakBytes = parseBreakBytes(receiveBreakCustom);
+  // Memoized: the split settings object feeds the console hook and must not
+  // churn every render.
+  const customBreakBytes = useMemo(() => parseBreakBytes(receiveBreakCustom), [receiveBreakCustom]);
 
-  const { lines, addLine, addSystemLine, handleData, resetSession, clearConsole } = useConsoleLines(
+  const { lines, addLine, addSystemLine, failLine, handleData, resetSession, clearConsole } = useConsoleLines(
     sendFormat === 'hex',
     { mode: receiveBreak, custom: customBreakBytes },
   );
@@ -121,27 +145,34 @@ export default function App() {
 
     resetCursor();
 
+    // The optimistic row goes in before the await: a device echo arriving
+    // during the send must not mix into the previous open received line.
+    let sentId: string | null = null;
     try {
       let bytes: Uint8Array;
 
       if (sendFormat === 'hex') {
         bytes = hexToBytes(command);
         // Hex payloads carry their own terminator — show the bytes as typed.
-        addLine(bytes, 'sent', bytesToHex(bytes));
+        sentId = addLine(bytes, 'sent', bytesToHex(bytes));
       } else {
         bytes = new TextEncoder().encode(command + lineEnding);
         // Row text excludes the appended ending (the row break marks it);
         // data keeps the bytes for hex view.
-        addLine(bytes, 'sent', command);
+        sentId = addLine(bytes, 'sent', command);
       }
 
       await send(bytes);
-      // Only clear on success — a failed send keeps the typed command.
-      setInputValue('');
+      // Only clear on success — a failed send keeps the typed command. Text
+      // typed during a slow send must survive too.
+      setInputValue((v) => (v === command ? '' : v));
       // Dedupe + append so ArrowUp walks history in send order; blank sends
       // stay out of history (an empty entry is nothing to recall).
       if (command) record(command);
     } catch (err: unknown) {
+      // The row stays (BLE chunked writes may have gone out partially) but is
+      // marked failed so the console does not claim a send that errored.
+      if (sentId) failLine(sentId);
       addSystemLine(`Send error: ${err instanceof Error ? err.message : String(err)}`);
     }
 

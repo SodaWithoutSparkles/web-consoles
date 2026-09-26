@@ -9,13 +9,17 @@ export function generateId(): string {
   return crypto.randomUUID();
 }
 
+// Hoisted: formatTime runs for every rendered row, so rebuilding the formatter
+// per call is pure waste.
+const TIME_FORMATTER = new Intl.DateTimeFormat('en-US', {
+  hour12: false,
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+});
+
 export function formatTime(date: Date): string {
-  return date.toLocaleTimeString('en-US', {
-    hour12: false,
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-  } as Intl.DateTimeFormatOptions) + '.' + String(date.getMilliseconds()).padStart(3, '0');
+  return TIME_FORMATTER.format(date) + '.' + String(date.getMilliseconds()).padStart(3, '0');
 }
 
 /** Shared empty buffer for freshly created received lines. */
