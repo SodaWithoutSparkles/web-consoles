@@ -59,3 +59,17 @@ select {
   background-position: right 6px center;
   padding-right: 20px;
 }
+
+/* Settings modal (native <dialog>): reset UA sizing so Tailwind classes win.
+   margin:auto restores centering — Tailwind preflight zeroes it. */
+dialog {
+  padding: 0;
+  border: 0;
+  margin: auto;
+  max-width: none;
+  max-height: none;
+}
+
+dialog::backdrop {
+  background: rgb(0 0 0 / 0.6);
+}

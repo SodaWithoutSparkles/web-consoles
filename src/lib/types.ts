@@ -18,8 +18,11 @@ export enum LineEnding {
   CRLF = '\r\n',
 }
 
-/** Display format for incoming data */
-export type DisplayFormat = 'ascii' | 'hex' | 'both';
+/**
+ * Display format for data rows: plain text, hex bytes, hex + ASCII on one row
+ * (`both`), or 16-byte hexdump rows (`both-hexdump`).
+ */
+export type DisplayFormat = 'ascii' | 'hex' | 'both' | 'both-hexdump';
 
 // ---- Structural platform types ----
 // The public API must not use the global `SerialPort` / `BluetoothDevice` type

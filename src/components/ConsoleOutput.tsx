@@ -1,17 +1,18 @@
 import { useEffect, useRef } from 'react';
 import type { DisplayFormat } from '../lib';
-import type { ConsoleLine } from '../types';
+import type { ConsoleLine, NonPrintable } from '../types';
 import { ConsoleRow } from './ConsoleRow';
 
 interface ConsoleOutputProps {
   lines: ConsoleLine[];
   showTimestamps: boolean;
   displayFormat: DisplayFormat;
+  nonPrintable: NonPrintable;
   autoScroll: boolean;
 }
 
 /** Scrolling console output, with the empty state and auto-scroll behaviour. */
-export function ConsoleOutput({ lines, showTimestamps, displayFormat, autoScroll }: ConsoleOutputProps) {
+export function ConsoleOutput({ lines, showTimestamps, displayFormat, nonPrintable, autoScroll }: ConsoleOutputProps) {
   const consoleRef = useRef<HTMLDivElement>(null);
 
   // Auto-scroll
@@ -42,6 +43,7 @@ export function ConsoleOutput({ lines, showTimestamps, displayFormat, autoScroll
               line={line}
               showTimestamps={showTimestamps}
               displayFormat={displayFormat}
+              nonPrintable={nonPrintable}
             />
           ))}
         </div>

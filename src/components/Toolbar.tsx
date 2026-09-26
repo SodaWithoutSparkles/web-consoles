@@ -137,7 +137,8 @@ export function Toolbar({
         >
           <option value="ascii">ASCII</option>
           <option value="hex">HEX</option>
-          <option value="both">Both</option>
+          <option value="both">Both (append)</option>
+          <option value="both-hexdump">Both (dump)</option>
         </select>
       </div>
 

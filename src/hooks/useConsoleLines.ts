@@ -1,10 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createStreamDecoder } from '../lib';
-import { concatBytes, EMPTY_BYTES, generateId } from '../utils';
-import type { ConnectionDirection, ConsoleLine } from '../types';
+import { EMPTY_BYTES, createLineSplitter, generateId, concatBytes, type LineSplitter } from '../utils';
+import type { ConnectionDirection, ConsoleLine, ReceiveBreak } from '../types';
 
 /** Max lines kept in state — bounds per-frame render work. */
 const MAX_LINES = 500;
+
+/** Receive-break settings. `custom` is null when the typed hex is unusable. */
+export interface SplitterSettings {
+  mode: ReceiveBreak;
+  custom: Uint8Array | null;
+}
 
 /**
  * Console line store. Lines live in a ref so transport events mutate them
@@ -14,21 +20,33 @@ const MAX_LINES = 500;
  * collecting chunks.
  *
  * `isRawStream` (hex send mode) turns line splitting off: a binary stream
- * carries no meaningful 0x0d/0x0a, so rows break only on a user send.
+ * carries no meaningful line endings, so rows break only on a user send.
+ * `split` feeds the receive-break mode; both are read through refs because the
+ * connection's `onData` closure is captured once per session.
  */
-export function useConsoleLines(isRawStream: boolean) {
+export function useConsoleLines(isRawStream: boolean, split: SplitterSettings) {
   const [lines, setLines] = useState<ConsoleLine[]>([]);
 
   const linesRef = useRef<ConsoleLine[]>([]);
   const flushRafRef = useRef<number | null>(null);
-  // Previous chunk ended on a bare CR: swallow a leading LF in the next chunk
-  // so a CRLF pair split across reads stays one line break.
-  const pendingCRRef = useRef(false);
   // Streaming decoder keeps a partial UTF-8 sequence across chunk boundaries.
   const decoderRef = useRef<((bytes: Uint8Array) => string) | null>(null);
   // Lets the connection's onData closure read the mode of the latest render.
   const rawStreamRef = useRef(isRawStream);
   rawStreamRef.current = isRawStream;
+  // Splitter + the settings it was built from. Rebuilt lazily when the mode
+  // changes, which also drops any partial match held for the old mode.
+  const splitterRef = useRef<{ key: string; splitter: LineSplitter } | null>(null);
+  const splitKey = `${split.mode}:${split.custom ? Array.from(split.custom).join() : ''}`;
+
+  /** Current splitter, built on first use and rebuilt when settings change. */
+  const getSplitter = useCallback((): LineSplitter => {
+    const current = splitterRef.current;
+    if (current && current.key === splitKey) return current.splitter;
+    const splitter = createLineSplitter(split.mode, split.custom);
+    splitterRef.current = { key: splitKey, splitter };
+    return splitter;
+  }, [splitKey, split.mode, split.custom]);
 
   const decodeChunk = useCallback((bytes: Uint8Array): string => {
     const decoder = decoderRef.current ?? (decoderRef.current = createStreamDecoder());
@@ -93,51 +111,19 @@ export function useConsoleLines(isRawStream: boolean) {
     scheduleFlush();
   }, [scheduleFlush]);
 
-  /**
-   * Feed one received chunk through the line splitter. Line breaks are CRLF /
-   * LF / CR — the same endings the send side offers. Complete lines become
-   * closed rows; a trailing partial stays open and visible until more data or
-   * a user send arrives.
-   */
-  const handleReceivedBytes = useCallback((bytes: Uint8Array) => {
-    if (bytes.length === 0) return;
-    let start = 0;
-
-    // CRLF split across two reads: the CR already ended its line, so the LF
-    // that completes the pair must not open a blank row.
-    if (pendingCRRef.current) {
-      pendingCRRef.current = false;
-      if (bytes[0] === 0x0a) {
-        start = 1;
-        const lines = linesRef.current;
-        const last = lines[lines.length - 1];
-        if (last && last.direction === 'received') {
-          // Keep the byte for hex view; text is already terminated.
-          lines[lines.length - 1] = { ...last, data: concatBytes(last.data, bytes.subarray(0, 1)) };
-          scheduleFlush();
-        }
-      }
-    }
-
-    for (let i = start; i < bytes.length;) {
-      const b = bytes[i];
-      if (b !== 0x0d && b !== 0x0a) { i++; continue; }
-
-      const crlf = b === 0x0d && bytes[i + 1] === 0x0a;
-      const end = crlf ? i + 2 : i + 1;
-      appendReceivedLine(bytes.subarray(start, end), decodeChunk(bytes.subarray(start, i)), true);
-      if (b === 0x0d && !crlf && end === bytes.length) {
-        // Chunk ends on a bare CR: it may be the first half of a CRLF whose LF
-        // is still in flight — reads are timing-based, not message-aligned.
-        pendingCRRef.current = true;
-      }
-      start = i = end;
-    }
-
-    if (start < bytes.length) {
-      appendReceivedLine(bytes.subarray(start), decodeChunk(bytes.subarray(start)), false);
-    }
-  }, [appendReceivedLine, decodeChunk, scheduleFlush]);
+  /** Fold delimiter bytes that only completed the previous row's terminator
+   * into that row: `data` keeps them (hex view stays faithful), text already ended. */
+  const absorbIntoPrevious = useCallback((bytes: Uint8Array, terminated: boolean) => {
+    const lines = linesRef.current;
+    const last = lines[lines.length - 1];
+    if (!last || last.direction !== 'received') return;
+    lines[lines.length - 1] = {
+      ...last,
+      data: concatBytes(last.data, bytes),
+      open: terminated ? false : last.open,
+    };
+    scheduleFlush();
+  }, [scheduleFlush]);
 
   /** Feed one chunk from the connection: raw or line-split, per current mode. */
   const handleData = useCallback((data: Uint8Array) => {
@@ -147,26 +133,30 @@ export function useConsoleLines(isRawStream: boolean) {
       // Hex mode: binary stream, no line endings — rows break only on a user
       // send (addLine closes the open line).
       appendReceivedLine(bytes, decodeChunk(bytes), false);
-    } else {
-      handleReceivedBytes(bytes);
+      return;
     }
-  }, [appendReceivedLine, decodeChunk, handleReceivedBytes]);
+    for (const segment of getSplitter().split(bytes)) {
+      if (segment.absorb) absorbIntoPrevious(segment.data, segment.terminated);
+      else appendReceivedLine(segment.data, decodeChunk(segment.textBytes), segment.terminated);
+    }
+  }, [absorbIntoPrevious, appendReceivedLine, decodeChunk, getSplitter]);
 
   const addSystemLine = useCallback((text: string) => {
     addLine(new TextEncoder().encode(text), 'system', text);
   }, [addLine]);
 
   /** New session: a partial UTF-8 sequence, an open received line, or a
-   * pending CR left by the previous connection must not leak into this one. */
+   * partial delimiter left by the previous connection must not leak into
+   * this one. */
   const resetSession = useCallback(() => {
     decoderRef.current = null;
     closeOpenLine();
-    pendingCRRef.current = false;
+    splitterRef.current = null;
   }, [closeOpenLine]);
 
   const clearConsole = useCallback(() => {
     linesRef.current = [];
-    pendingCRRef.current = false;
+    splitterRef.current = null;
     setLines([]);
   }, []);
 

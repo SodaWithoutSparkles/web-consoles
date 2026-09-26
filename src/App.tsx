@@ -12,17 +12,20 @@ import {
   type SerialConnectionOptions,
 } from './lib';
 import { CommandInput } from './components/CommandInput';
+import { connectionSection } from './components/ConnectionSettings';
 import { ConsoleOutput } from './components/ConsoleOutput';
+import { displaySection } from './components/DisplaySettings';
 import { ErrorBar } from './components/ErrorBar';
 import { Header } from './components/Header';
-import { SettingsPanel } from './components/SettingsPanel';
+import { SettingsModal } from './components/SettingsModal';
 import { SupportWarning } from './components/SupportWarning';
 import { Toolbar } from './components/Toolbar';
 import { useConsoleLines } from './hooks/useConsoleLines';
 import { useDeviceConnection } from './hooks/useDeviceConnection';
 import { useSendHistory } from './hooks/useSendHistory';
 import { useStoredState } from './hooks/useStoredState';
-import type { ConnectionType, SendFormat } from './types';
+import { parseBreakBytes } from './utils';
+import type { ConnectionType, NonPrintable, ReceiveBreak, SendFormat } from './types';
 
 /**
  * Demo console app. Owns the UI state and composes the console hooks
@@ -37,19 +40,28 @@ export default function App() {
   // Console
   const [inputValue, setInputValue] = useState('');
   const [autoScroll, setAutoScroll] = useState(true);
-  const [showTimestamps, setShowTimestamps] = useState(true);
   const [showSettings, setShowSettings] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
 
   // Persisted settings (localStorage)
   const [displayFormat, setDisplayFormat] = useStoredState<DisplayFormat>('display-format', 'ascii');
+  const [showTimestamps, setShowTimestamps] = useStoredState('show-timestamps', true);
+  const [receiveBreak, setReceiveBreak] = useStoredState<ReceiveBreak>('receive-break', 'follow');
+  const [receiveBreakCustom, setReceiveBreakCustom] = useStoredState('receive-break-custom', '');
+  const [nonPrintable, setNonPrintable] = useStoredState<NonPrintable>('non-printable', 'hex-except-crlf');
   const [lineEnding, setLineEnding] = useStoredState<LineEnding>('line-ending', LineEnding.CRLF);
   const [sendFormat, setSendFormat] = useStoredState<SendFormat>('send-format', 'text');
   const [serialConfig, setSerialConfig] = useStoredState<SerialConnectionOptions>('serial-config', DEFAULT_SERIAL_OPTIONS);
   const [blePresetKey, setBlePresetKey] = useStoredState<string>('ble-preset', 'nordic_uart');
   const [bleConfig, setBleConfig] = useStoredState<BLEConnectionOptions>('ble-config', DEFAULT_BLE_OPTIONS);
 
-  const { lines, addLine, addSystemLine, handleData, resetSession, clearConsole } = useConsoleLines(sendFormat === 'hex');
+  // Unusable custom hex falls back to Follow send (see createLineSplitter).
+  const customBreakBytes = parseBreakBytes(receiveBreakCustom);
+
+  const { lines, addLine, addSystemLine, handleData, resetSession, clearConsole } = useConsoleLines(
+    sendFormat === 'hex',
+    { mode: receiveBreak, custom: customBreakBytes },
+  );
   const { history, record, step, resetCursor, remove: removeHistory, clear: clearHistory } = useSendHistory();
 
   const inputRef = useRef<HTMLInputElement>(null);
@@ -164,16 +176,33 @@ export default function App() {
         onToggleSettings={() => setShowSettings((v) => !v)}
       />
 
-      {showSettings && (
-        <SettingsPanel
-          serialConfig={serialConfig}
-          setSerialConfig={setSerialConfig}
-          bleConfig={bleConfig}
-          setBleConfig={setBleConfig}
-          blePresetKey={blePresetKey}
-          setBlePresetKey={setBlePresetKey}
-        />
-      )}
+      <SettingsModal
+        open={showSettings}
+        onClose={() => setShowSettings(false)}
+        sections={[
+          connectionSection({
+            serialConfig,
+            setSerialConfig,
+            bleConfig,
+            setBleConfig,
+            blePresetKey,
+            setBlePresetKey,
+          }),
+          displaySection({
+            showTimestamps,
+            setShowTimestamps,
+            receiveBreak,
+            setReceiveBreak,
+            receiveBreakCustom,
+            setReceiveBreakCustom,
+            customBreakValid: customBreakBytes !== null,
+            displayFormat,
+            setDisplayFormat,
+            nonPrintable,
+            setNonPrintable,
+          }),
+        ]}
+      />
 
       <Toolbar
         connectionType={connectionType}
@@ -205,6 +234,7 @@ export default function App() {
         lines={lines}
         showTimestamps={showTimestamps}
         displayFormat={displayFormat}
+        nonPrintable={nonPrintable}
         autoScroll={autoScroll}
       />
 

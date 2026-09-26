@@ -21,3 +21,24 @@ export type ConnectionType = 'serial' | 'ble' | null;
 
 /** How the command box interprets typed input. */
 export type SendFormat = 'text' | 'hex';
+
+/**
+ * Which bytes end a received line. `follow` is the historical behaviour:
+ * CR, LF and CRLF all break. The named modes match only that ending, and
+ * `custom` matches an exact byte sequence (falling back to `follow` when the
+ * typed hex is empty or invalid).
+ */
+export type ReceiveBreak = 'follow' | 'crlf' | 'cr' | 'lf' | 'custom';
+
+/**
+ * How control characters (C0 0x00-0x1F and DEL 0x7F) render in the text view.
+ * `hidden` drops them, `print` shows them literally, the hex modes show each
+ * remaining one as its bare uppercase hex byte except for the listed endings.
+ */
+export type NonPrintable =
+  | 'hidden'
+  | 'hex-except-crlf'
+  | 'hex-except-crlf-tab'
+  | 'hex-except-crlf-tab-bksp'
+  | 'hex-all'
+  | 'print';
